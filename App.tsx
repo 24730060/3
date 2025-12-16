@@ -27,7 +27,6 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>(Tab.HOME);
   const [user, setUser] = useState<User>(getUser());
   const [weather, setWeather] = useState<WeatherData>({ temp: 20, condition: '맑음', main: 'Sunny' });
-  // Updated default location to Yongsan-gu (removed City)
   const [location, setLocation] = useState<LocationInfo>({ latitude: 37.5326, longitude: 126.9900, address: '위치 확인 중...' });
   const [missions, setMissions] = useState<Mission[]>([]);
   const [logs, setLogs] = useState<MissionLog[]>(getLogs());
@@ -41,8 +40,8 @@ const App: React.FC = () => {
   const [locationContext, setLocationContext] = useState('');
   const [isLoadingMissions, setIsLoadingMissions] = useState(false);
   const [isLocating, setIsLocating] = useState(false);
-  const [isSearching, setIsSearching] = useState(false); // Map search loading state
-  const [hasSynced, setHasSynced] = useState(false); // Track if user has synced location/missions
+  const [isSearching, setIsSearching] = useState(false); 
+  const [hasSynced, setHasSynced] = useState(false); 
   const [policyModal, setPolicyModal] = useState({ visible: false, title: '', content: '' });
   const [testStatus, setTestStatus] = useState<string | null>(null);
   const [restoreStatus, setRestoreStatus] = useState<string | null>(null);
@@ -50,20 +49,27 @@ const App: React.FC = () => {
   // Map State
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
-  const debounceTimerRef = useRef<any>(null); // For optimizing address fetch
+  const debounceTimerRef = useRef<any>(null); 
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const addressCacheRef = useRef<Map<string, string>>(new Map()); // Cache for addresses
   
   const [searchQuery, setSearchQuery] = useState('');
   const [tempAddress, setTempAddress] = useState('');
   const [newPlaceType, setNewPlaceType] = useState<'indoor'|'outdoor'>('outdoor');
   const [newPlaceName, setNewPlaceName] = useState('');
   
-  // Track current active location type preference (Indoor/Outdoor)
   const [currentLocationType, setCurrentLocationType] = useState<'indoor'|'outdoor'>('outdoor');
 
   // --- Helpers ---
   const getAddressFromCoords = async (lat: number, lon: number): Promise<string> => {
+    // Round coords to ~100m precision for caching to hit more often during small jitters
+    const cacheKey = `${lat.toFixed(3)},${lon.toFixed(3)}`;
+    if (addressCacheRef.current.has(cacheKey)) {
+        return addressCacheRef.current.get(cacheKey)!;
+    }
+
     try {
-      // 1. BigDataCloud (Fast, Free, Client-side friendly)
+      // 1. BigDataCloud (Fast, Free)
       const response = await fetch(
         `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=ko`
       );
@@ -72,7 +78,9 @@ const App: React.FC = () => {
       const district = data.locality || data.city || '';
       
       if (city || district) {
-         return `${city} ${district}`.trim();
+         const result = `${city} ${district}`.trim();
+         addressCacheRef.current.set(cacheKey, result);
+         return result;
       }
       throw new Error("BDC Failed");
     } catch {
@@ -80,16 +88,19 @@ const App: React.FC = () => {
       try {
         const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=14&addressdetails=1&accept-language=ko`);
         const data = await response.json();
-        // Try to construct a cleaner address
         const addr = data.address || {};
         const district = addr.borough || addr.district || addr.city || '';
         const neighborhood = addr.quarter || addr.neighbourhood || addr.suburb || '';
         
+        let result = '';
         if (district || neighborhood) {
-            return `${district} ${neighborhood}`.trim();
+            result = `${district} ${neighborhood}`.trim();
+        } else {
+            result = data.display_name.split(',').slice(0, 2).join(' ');
         }
         
-        return data.display_name.split(',').slice(0, 2).join(' ');
+        addressCacheRef.current.set(cacheKey, result);
+        return result;
       } catch {
         return `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
       }
@@ -99,10 +110,7 @@ const App: React.FC = () => {
   const refreshData = async (lat: number, lon: number, forceType?: 'indoor'|'outdoor') => {
     setIsLoadingMissions(true);
     try {
-      // Determine type: explicitly forced > currently active state > default fallback
       let type: 'indoor'|'outdoor' = forceType || currentLocationType;
-      
-      // Update the active state so subsequent refreshes (e.g. weather button) use this type
       setCurrentLocationType(type);
 
       const address = await getAddressFromCoords(lat, lon);
@@ -131,7 +139,6 @@ const App: React.FC = () => {
     }
   };
 
-  // --- Location Logic (Robust) ---
   const handleCurrentLocation = () => {
     setIsLocating(true);
 
@@ -143,7 +150,6 @@ const App: React.FC = () => {
     const onFail = async () => {
         console.warn("GPS failed, attempting IP fallback...");
         try {
-            // Fallback: IP Location
             const res = await fetch('https://ipapi.co/json/');
             const data = await res.json();
             if (data.latitude && data.longitude) {
@@ -153,9 +159,6 @@ const App: React.FC = () => {
             }
         } catch (e) {
             setIsLocating(false);
-            console.warn("All location methods failed", e);
-            // If it's the first load, we might silently fail, but if user clicked, we should alert?
-            // For now, let's reset to default if we really can't find anything, or just keep previous state.
         }
     };
 
@@ -171,7 +174,6 @@ const App: React.FC = () => {
     );
   };
 
-  // Initial Load Location Check
   useEffect(() => {
     handleCurrentLocation();
   }, []);
@@ -182,7 +184,7 @@ const App: React.FC = () => {
     if (mapInstanceRef.current) return;
 
     const map = L.map(mapContainerRef.current, {
-        zoomControl: false, // Cleaner UI for mobile
+        zoomControl: false, 
         attributionControl: false
     }).setView([location.latitude, location.longitude], 16);
 
@@ -190,17 +192,15 @@ const App: React.FC = () => {
       maxZoom: 19
     }).addTo(map);
 
-    // Initial state
     (window as any).tempLat = location.latitude;
     (window as any).tempLng = location.longitude;
     setTempAddress(location.address);
 
     mapInstanceRef.current = map;
 
-    // --- Optimization: Debounce Address Fetching ---
-    // Instead of fetching on every pixel move, wait until user stops moving
+    // Optimization: Reduced debounce to 150ms for snappy feedback
     map.on('move', () => {
-        setTempAddress("위치 이동 중...");
+        setTempAddress("위치 확인 중...");
         if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     });
 
@@ -209,72 +209,92 @@ const App: React.FC = () => {
         (window as any).tempLat = center.lat;
         (window as any).tempLng = center.lng;
 
-        // Debounce: Wait 500ms after move ends before fetching API
         debounceTimerRef.current = setTimeout(async () => {
             const addr = await getAddressFromCoords(center.lat, center.lng);
             setTempAddress(addr);
-        }, 500); 
+        }, 150); 
     });
+
+    // Auto-focus search input
+    setTimeout(() => {
+       searchInputRef.current?.focus();
+    }, 300);
   };
 
   const handleMapSearch = async () => {
     if (!searchQuery) return;
     setIsSearching(true);
-    
+    searchInputRef.current?.blur(); // Hide keyboard
+
     try {
         let found = false;
-
-        // Get current map center to prioritize nearby search
         let centerLat = location.latitude;
         let centerLon = location.longitude;
+        
+        // Use current map center if available
         if (mapInstanceRef.current) {
             const center = mapInstanceRef.current.getCenter();
             centerLat = center.lat;
             centerLon = center.lng;
         }
 
-        // 1. Try Photon (Komoot) with location bias
+        // 1. Photon (Komoot)
         try {
-            const response = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(searchQuery)}&lang=ko&limit=1&lat=${centerLat}&lon=${centerLon}`);
-            const data = await response.json();
-            if (data.features && data.features.length > 0) {
-                const [lon, lat] = data.features[0].geometry.coordinates;
-                // Just move the map. 'moveend' will trigger address fetch.
-                if (mapInstanceRef.current) {
-                    mapInstanceRef.current.setView([lat, lon], 16);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 4000); // 4s timeout
+
+            // Removed strict bbox to ensure results are found even if slightly outside
+            const response = await fetch(
+                `https://photon.komoot.io/api/?q=${encodeURIComponent(searchQuery)}&lang=ko&limit=1&lat=${centerLat}&lon=${centerLon}`,
+                { signal: controller.signal }
+            );
+            clearTimeout(timeoutId);
+            
+            if (response.ok) {
+                const data = await response.json();
+                if (data.features && data.features.length > 0) {
+                    const [lon, lat] = data.features[0].geometry.coordinates;
+                    if (mapInstanceRef.current) {
+                        mapInstanceRef.current.setView([lat, lon], 16);
+                    }
+                    found = true;
                 }
-                found = true;
             }
         } catch (e) {
-            console.warn("Photon search failed, falling back...");
+            console.warn("Photon search failed, trying fallback...");
         }
 
-        // 2. Fallback to Nominatim
+        // 2. Nominatim Fallback (OpenStreetMap)
         if (!found) {
-            const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&accept-language=ko&limit=1`);
-            const data = await response.json();
-            if (data && data.length > 0) {
-                const lat = parseFloat(data[0].lat);
-                const lon = parseFloat(data[0].lon);
-                if (mapInstanceRef.current) {
-                    mapInstanceRef.current.setView([lat, lon], 16);
+            const response = await fetch(
+                `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&accept-language=ko&limit=1`
+            );
+            
+            if (response.ok) {
+                const data = await response.json();
+                if (data && data.length > 0) {
+                    const lat = parseFloat(data[0].lat);
+                    const lon = parseFloat(data[0].lon);
+                    if (mapInstanceRef.current) {
+                        mapInstanceRef.current.setView([lat, lon], 16);
+                    }
+                    found = true;
                 }
-                found = true;
             }
         }
 
         if (!found) {
-            alert("검색 결과가 없습니다. 다른 검색어로 시도해보세요.");
+            alert("검색 결과가 없습니다. 정확한 장소명을 입력해주세요.");
         }
     } catch (e) {
-        alert("검색 중 오류가 발생했습니다.");
+        console.error(e);
+        alert("검색 중 네트워크 오류가 발생했습니다.");
     } finally {
         setIsSearching(false);
     }
   };
 
   const confirmLocation = () => {
-    // Get latest coordinates from the map center
     let lat = location.latitude;
     let lon = location.longitude;
     
@@ -355,12 +375,10 @@ const App: React.FC = () => {
     setStreak(calculateStreak(logs));
   }, [logs]);
 
-  // Leaflet Cleanup Logic
   useEffect(() => {
     if (showMapModal) {
       setTimeout(initMap, 100);
     } else {
-      // Destroy map instance when modal closes to prevent grey screen on reopen
       if (mapInstanceRef.current) {
         mapInstanceRef.current.off();
         mapInstanceRef.current.remove();
@@ -378,14 +396,12 @@ const App: React.FC = () => {
     }
   };
 
-  // --- Render ---
-
   return (
-    // Mobile View Container Wrapper
-    <div className="w-full h-full sm:h-[90vh] sm:max-w-md sm:rounded-[3rem] sm:border-[8px] sm:border-slate-800 bg-[#f0fdf4] relative overflow-hidden flex flex-col font-sans select-none shadow-2xl">
+    // Mobile View Container Wrapper: Changed h-full to h-[100dvh] for better mobile browser support
+    <div className="w-full h-[100dvh] sm:h-[90vh] sm:max-w-md sm:rounded-[3rem] sm:border-[8px] sm:border-slate-800 bg-[#f0fdf4] relative overflow-hidden flex flex-col font-sans select-none shadow-2xl">
       
-      {/* GLOBAL HEADER - Now visible on all tabs */}
-      <div className="bg-emerald-600 px-4 py-3 flex justify-between items-center shadow-md z-30 shrink-0">
+      {/* GLOBAL HEADER */}
+      <div className="bg-emerald-600 px-4 py-3 flex justify-between items-center shadow-md z-30 shrink-0 pt-safe-top">
         <div className="flex items-center gap-2 text-white font-bold text-lg">
             <Leaf className="w-5 h-5 fill-white" /> EcoPlayer
         </div>
@@ -404,9 +420,7 @@ const App: React.FC = () => {
         {/* 1. HOME TAB */}
         {activeTab === Tab.HOME && (
           <div className="flex-1 flex flex-col overflow-hidden animate-in fade-in">
-              {/* Scrollable Content */}
               <div className="flex-1 overflow-y-auto pb-24 p-4 space-y-5 hide-scrollbar">
-                  {/* Streak Banner */}
                   {streak > 0 ? (
                       <div className="bg-gradient-to-r from-orange-50 to-white border border-orange-100 rounded-2xl p-4 flex items-center justify-between shadow-sm relative overflow-hidden">
                           <div className="absolute right-0 top-0 opacity-10 pointer-events-none">
@@ -435,12 +449,9 @@ const App: React.FC = () => {
                       </div>
                   )}
 
-                  {/* Diary Section */}
                   <Diary logs={logs} />
 
-                  {/* Weather & Location Grid */}
                   <div className="grid grid-cols-2 gap-3">
-                      {/* Weather Card */}
                       <div className="bg-blue-50/50 p-4 rounded-3xl border border-blue-100 flex flex-col items-center justify-between min-h-[140px] relative overflow-hidden group">
                           <div className="absolute top-0 right-0 p-6 opacity-0 group-hover:opacity-10 transition-opacity">
                               <CloudRain className="w-16 h-16 text-blue-500" />
@@ -460,7 +471,6 @@ const App: React.FC = () => {
                           </button>
                       </div>
 
-                      {/* Location Card */}
                       <div className="bg-emerald-50/50 p-4 rounded-3xl border border-emerald-100 flex flex-col items-center justify-between min-h-[140px] relative overflow-hidden group">
                           <div className="absolute top-0 right-0 p-6 opacity-0 group-hover:opacity-10 transition-opacity">
                               <MapPin className="w-16 h-16 text-emerald-500" />
@@ -482,7 +492,6 @@ const App: React.FC = () => {
                       </div>
                   </div>
 
-                  {/* Mission Section */}
                   <div className="pt-2">
                       <div className="flex justify-between items-center mb-3 px-1">
                           <h3 className="font-bold text-slate-800 flex items-center gap-2 text-lg">
@@ -585,7 +594,6 @@ const App: React.FC = () => {
         )}
       </div>
 
-      {/* --- Bottom Navigation --- */}
       <div className="absolute bottom-0 left-0 w-full bg-white border-t border-slate-200 py-2 px-2 grid grid-cols-4 z-30 pb-safe">
         <button 
           onClick={() => setActiveTab(Tab.HOME)} 
@@ -617,7 +625,6 @@ const App: React.FC = () => {
         </button>
       </div>
 
-      {/* --- Mission Flow Modal --- */}
       {activeMission && (
         <MissionFlow 
           mission={activeMission} 
@@ -626,19 +633,18 @@ const App: React.FC = () => {
         />
       )}
 
-      {/* --- Map Modal --- */}
       {showMapModal && (
         <div className="absolute inset-0 bg-white z-50 flex flex-col animate-in slide-in-from-bottom-full duration-300">
-           <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-white z-10">
+           <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-white z-10 pt-safe-top">
               <h3 className="font-bold text-lg">위치 설정</h3>
               <button onClick={() => setShowMapModal(false)} className="p-2 bg-slate-100 rounded-full"><X className="w-5 h-5"/></button>
            </div>
            
-           {/* Search Bar */}
            <div className="p-4 bg-slate-50 border-b border-slate-100 flex gap-2">
               <div className="flex-1 bg-white border border-slate-200 rounded-xl flex items-center px-3 overflow-hidden">
                  <Search className="w-4 h-4 text-slate-400 mr-2 shrink-0" />
                  <input 
+                    ref={searchInputRef}
                     type="text" 
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
@@ -654,9 +660,7 @@ const App: React.FC = () => {
 
            <div className="relative flex-1 bg-slate-100">
                <div ref={mapContainerRef} className="absolute inset-0 z-0"></div>
-               {/* Center Pin Indicator (Visual only, actual logic uses marker) */}
                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none mb-8">
-                  {/* Sprout visual indicator same as map marker */}
                   <div className="w-10 h-10 bg-emerald-500 rounded-full border-[3px] border-white flex items-center justify-center shadow-lg animate-bounce">
                      <Sprout className="w-5 h-5 text-white fill-white" />
                   </div>
@@ -664,15 +668,13 @@ const App: React.FC = () => {
                </div>
            </div>
 
-           <div className="p-5 bg-white rounded-t-3xl shadow-[0_-5px_20px_rgba(0,0,0,0.1)] z-20">
-               {/* Saved Places (Favorites) Section */}
+           <div className="p-5 bg-white rounded-t-3xl shadow-[0_-5px_20px_rgba(0,0,0,0.1)] z-20 pb-safe-bottom">
                <div className="mb-5">
                    <div className="flex items-center gap-1 mb-2">
                        <Star className="w-4 h-4 text-yellow-400 fill-yellow-400" />
                        <span className="text-xs font-bold text-slate-500">즐겨찾기</span>
                    </div>
                    <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-1">
-                       {/* Plus Button */}
                        <button 
                            onClick={() => {
                               document.getElementById('place-name-input')?.focus();
@@ -682,7 +684,6 @@ const App: React.FC = () => {
                            <Plus className="w-6 h-6 text-slate-400" />
                        </button>
                        
-                       {/* Saved Places */}
                        {savedPlaces.map(place => (
                            <button 
                                key={place.id}
@@ -713,7 +714,6 @@ const App: React.FC = () => {
                   <span className="font-bold text-slate-800 text-lg truncate">{tempAddress || '위치를 선택해주세요'}</span>
                </div>
                
-               {/* Save Place UI */}
                <div className="mb-4 p-4 bg-slate-50 rounded-xl border border-slate-100">
                   <div className="flex items-center gap-2 mb-2">
                      <input 
@@ -751,7 +751,6 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* --- Settings Modal --- */}
       {showSettings && (
         <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
            <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl animate-in zoom-in duration-200">
@@ -801,7 +800,6 @@ const App: React.FC = () => {
         </div>
       )}
       
-      {/* Toast Notification for Sheet Status */}
       {testStatus && (
           <div className="fixed top-4 left-1/2 -translate-x-1/2 bg-black/80 text-white px-4 py-2 rounded-full text-xs z-[100] flex items-center gap-2 animate-in fade-in slide-in-from-top-2">
               {testStatus.includes('성공') ? <CheckCircle className="w-3 h-3 text-green-400"/> : <Loader className="w-3 h-3 animate-spin"/>}
@@ -809,7 +807,6 @@ const App: React.FC = () => {
           </div>
       )}
 
-      {/* Policy Modal */}
       {policyModal.visible && (
         <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-6 backdrop-blur-sm" onClick={() => setPolicyModal({...policyModal, visible: false})}>
             <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-xl" onClick={e => e.stopPropagation()}>
@@ -820,7 +817,6 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Styles for Leaflet & Animations */}
       <style>{`
         .custom-pin {
           display: flex;
@@ -837,6 +833,15 @@ const App: React.FC = () => {
         .hide-scrollbar {
             -ms-overflow-style: none;
             scrollbar-width: none;
+        }
+        .pb-safe {
+            padding-bottom: env(safe-area-inset-bottom, 20px);
+        }
+        .pb-safe-bottom {
+            padding-bottom: env(safe-area-inset-bottom, 20px);
+        }
+        .pt-safe-top {
+            padding-top: env(safe-area-inset-top, 20px);
         }
       `}</style>
     </div>
