@@ -50,7 +50,8 @@ const App: React.FC = () => {
   // Map State
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
-  const markerRef = useRef<any>(null);
+  const debounceTimerRef = useRef<any>(null); // For optimizing address fetch
+  
   const [searchQuery, setSearchQuery] = useState('');
   const [tempAddress, setTempAddress] = useState('');
   const [newPlaceType, setNewPlaceType] = useState<'indoor'|'outdoor'>('outdoor');
@@ -175,46 +176,44 @@ const App: React.FC = () => {
     handleCurrentLocation();
   }, []);
 
-  // --- Map Logic ---
+  // --- Map Logic (Fixed Center Pin) ---
   const initMap = () => {
     if (!mapContainerRef.current) return;
     if (mapInstanceRef.current) return;
 
-    const map = L.map(mapContainerRef.current).setView([location.latitude, location.longitude], 15);
+    const map = L.map(mapContainerRef.current, {
+        zoomControl: false, // Cleaner UI for mobile
+        attributionControl: false
+    }).setView([location.latitude, location.longitude], 16);
+
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap contributors'
+      maxZoom: 19
     }).addTo(map);
 
-    const sproutIconHtml = `
-      <div style="background-color:#10b981;width:40px;height:40px;border-radius:50%;border:3px solid white;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 15px rgba(0,0,0,0.3);">
-        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M7 20h10" />
-          <path d="M10 20c5.5-2.5.8-6.4 3-10" />
-          <path d="M9.5 9.4c1.1.8 1.8 2.2 2.3 3.6" />
-          <path d="M14 14.3c-1.1-1.1-2.5-1.8-3.9-2.3" />
-          <path d="M12 3v17" />
-        </svg>
-      </div>
-    `;
+    // Initial state
+    (window as any).tempLat = location.latitude;
+    (window as any).tempLng = location.longitude;
+    setTempAddress(location.address);
 
-    const customIcon = L.divIcon({
-      className: 'custom-pin',
-      html: sproutIconHtml,
-      iconSize: [40, 40],
-      iconAnchor: [20, 40]
-    });
-
-    const marker = L.marker([location.latitude, location.longitude], { icon: customIcon }).addTo(map);
-    markerRef.current = marker;
     mapInstanceRef.current = map;
 
-    map.on('click', async (e: any) => {
-      const { lat, lng } = e.latlng;
-      marker.setLatLng([lat, lng]);
-      const addr = await getAddressFromCoords(lat, lng);
-      setTempAddress(addr);
-      (window as any).tempLat = lat;
-      (window as any).tempLng = lng;
+    // --- Optimization: Debounce Address Fetching ---
+    // Instead of fetching on every pixel move, wait until user stops moving
+    map.on('move', () => {
+        setTempAddress("위치 이동 중...");
+        if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    });
+
+    map.on('moveend', () => {
+        const center = map.getCenter();
+        (window as any).tempLat = center.lat;
+        (window as any).tempLng = center.lng;
+
+        // Debounce: Wait 500ms after move ends before fetching API
+        debounceTimerRef.current = setTimeout(async () => {
+            const addr = await getAddressFromCoords(center.lat, center.lng);
+            setTempAddress(addr);
+        }, 500); 
     });
   };
 
@@ -222,44 +221,44 @@ const App: React.FC = () => {
     if (!searchQuery) return;
     setIsSearching(true);
     
-    // Define helper to update map state
-    const updateMapLocation = async (lat: number, lon: number) => {
-        if (mapInstanceRef.current) {
-            mapInstanceRef.current.setView([lat, lon], 16);
-            if (markerRef.current) markerRef.current.setLatLng([lat, lon]);
-        }
-        (window as any).tempLat = lat;
-        (window as any).tempLng = lon;
-        
-        // Fetch formatted address for the new location
-        const addr = await getAddressFromCoords(lat, lon);
-        setTempAddress(addr);
-    };
-
     try {
         let found = false;
 
-        // 1. Try Photon (Komoot)
+        // Get current map center to prioritize nearby search
+        let centerLat = location.latitude;
+        let centerLon = location.longitude;
+        if (mapInstanceRef.current) {
+            const center = mapInstanceRef.current.getCenter();
+            centerLat = center.lat;
+            centerLon = center.lng;
+        }
+
+        // 1. Try Photon (Komoot) with location bias
         try {
-            const response = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(searchQuery)}&lang=ko&limit=1`);
+            const response = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(searchQuery)}&lang=ko&limit=1&lat=${centerLat}&lon=${centerLon}`);
             const data = await response.json();
             if (data.features && data.features.length > 0) {
                 const [lon, lat] = data.features[0].geometry.coordinates;
-                await updateMapLocation(lat, lon);
+                // Just move the map. 'moveend' will trigger address fetch.
+                if (mapInstanceRef.current) {
+                    mapInstanceRef.current.setView([lat, lon], 16);
+                }
                 found = true;
             }
         } catch (e) {
             console.warn("Photon search failed, falling back...");
         }
 
-        // 2. Fallback to Nominatim if Photon failed or found nothing
+        // 2. Fallback to Nominatim
         if (!found) {
             const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&accept-language=ko&limit=1`);
             const data = await response.json();
             if (data && data.length > 0) {
                 const lat = parseFloat(data[0].lat);
                 const lon = parseFloat(data[0].lon);
-                await updateMapLocation(lat, lon);
+                if (mapInstanceRef.current) {
+                    mapInstanceRef.current.setView([lat, lon], 16);
+                }
                 found = true;
             }
         }
@@ -275,8 +274,15 @@ const App: React.FC = () => {
   };
 
   const confirmLocation = () => {
-    const lat = (window as any).tempLat || location.latitude;
-    const lon = (window as any).tempLng || location.longitude;
+    // Get latest coordinates from the map center
+    let lat = location.latitude;
+    let lon = location.longitude;
+    
+    if (mapInstanceRef.current) {
+        const center = mapInstanceRef.current.getCenter();
+        lat = center.lat;
+        lon = center.lng;
+    }
     
     if (newPlaceName) {
         const newId = Date.now();
@@ -295,7 +301,6 @@ const App: React.FC = () => {
     }
 
     setShowMapModal(false);
-    // Force refresh with the selected place type
     refreshData(lat, lon, newPlaceType);
   };
 
@@ -360,7 +365,6 @@ const App: React.FC = () => {
         mapInstanceRef.current.off();
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
-        markerRef.current = null;
       }
     }
   }, [showMapModal]);
@@ -377,7 +381,8 @@ const App: React.FC = () => {
   // --- Render ---
 
   return (
-    <div className="h-screen w-full bg-[#f0fdf4] relative overflow-hidden flex flex-col font-sans select-none">
+    // Mobile View Container Wrapper
+    <div className="w-full h-full sm:h-[90vh] sm:max-w-md sm:rounded-[3rem] sm:border-[8px] sm:border-slate-800 bg-[#f0fdf4] relative overflow-hidden flex flex-col font-sans select-none shadow-2xl">
       
       {/* GLOBAL HEADER - Now visible on all tabs */}
       <div className="bg-emerald-600 px-4 py-3 flex justify-between items-center shadow-md z-30 shrink-0">
@@ -395,12 +400,12 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      <div className="flex-1 overflow-hidden relative flex flex-col">
+      <div className="flex-1 overflow-hidden relative flex flex-col bg-[#f0fdf4]">
         {/* 1. HOME TAB */}
         {activeTab === Tab.HOME && (
           <div className="flex-1 flex flex-col overflow-hidden animate-in fade-in">
               {/* Scrollable Content */}
-              <div className="flex-1 overflow-y-auto pb-24 p-4 space-y-5">
+              <div className="flex-1 overflow-y-auto pb-24 p-4 space-y-5 hide-scrollbar">
                   {/* Streak Banner */}
                   {streak > 0 ? (
                       <div className="bg-gradient-to-r from-orange-50 to-white border border-orange-100 rounded-2xl p-4 flex items-center justify-between shadow-sm relative overflow-hidden">
@@ -556,14 +561,14 @@ const App: React.FC = () => {
 
         {/* 3. RANK TAB */}
         {activeTab === Tab.RANK && (
-          <div className="flex-1 overflow-y-auto pb-20 animate-in fade-in">
+          <div className="flex-1 overflow-y-auto pb-20 animate-in fade-in hide-scrollbar">
              <Leaderboard currentUser={user} logs={logs} />
           </div>
         )}
 
         {/* 4. INFO/PROFILE TAB */}
         {activeTab === Tab.INFO && (
-          <div className="flex-1 overflow-y-auto pb-20 animate-in fade-in">
+          <div className="flex-1 overflow-y-auto pb-20 animate-in fade-in hide-scrollbar">
               <Profile 
                   user={user} 
                   logs={logs} 
@@ -650,11 +655,12 @@ const App: React.FC = () => {
            <div className="relative flex-1 bg-slate-100">
                <div ref={mapContainerRef} className="absolute inset-0 z-0"></div>
                {/* Center Pin Indicator (Visual only, actual logic uses marker) */}
-               <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none mb-4">
+               <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none mb-8">
                   {/* Sprout visual indicator same as map marker */}
                   <div className="w-10 h-10 bg-emerald-500 rounded-full border-[3px] border-white flex items-center justify-center shadow-lg animate-bounce">
                      <Sprout className="w-5 h-5 text-white fill-white" />
                   </div>
+                  <div className="w-2 h-2 bg-black/20 rounded-full absolute -bottom-2 left-1/2 -translate-x-1/2 blur-[2px]"></div>
                </div>
            </div>
 
@@ -683,11 +689,10 @@ const App: React.FC = () => {
                                onClick={() => {
                                    if (mapInstanceRef.current) {
                                        mapInstanceRef.current.setView([place.lat, place.lon], 16);
-                                       if (markerRef.current) markerRef.current.setLatLng([place.lat, place.lon]);
                                        setTempAddress(place.address);
                                        (window as any).tempLat = place.lat;
                                        (window as any).tempLng = place.lon;
-                                       setNewPlaceType(place.type); // Update type when clicking favorite
+                                       setNewPlaceType(place.type);
                                    }
                                }}
                                className="w-16 h-16 rounded-2xl bg-slate-50 border border-slate-200 flex flex-col items-center justify-center gap-1 shrink-0 active:scale-95 transition-transform hover:border-emerald-500 hover:bg-emerald-50"
