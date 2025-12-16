@@ -1,0 +1,7 @@
+{
+  "name": "에코플레이어 (EcoPlayer)",
+  "description": "AI 기반 환경 보호 습관 형성 및 게이미피케이션 앱",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
