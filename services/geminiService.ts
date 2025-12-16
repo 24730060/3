@@ -1,9 +1,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Mission, WeatherData, LocationInfo } from '../types';
 
-// 주의: 여기서 전역 변수로 초기화하면 process.env가 준비되기 전에 실행되어 앱이 멈출 수 있습니다.
-// const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }); 
-
 export const generateEcoMissions = async (
   weather: WeatherData,
   location: LocationInfo,
@@ -11,8 +8,14 @@ export const generateEcoMissions = async (
   completedTitles: string[] = []
 ): Promise<{ missions: Mission[], locationContext: string }> => {
   try {
-    // [수정] 함수가 호출되는 시점에는 index.tsx의 설정이 완료된 상태이므로, 여기서 초기화하는 것이 안전합니다.
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const apiKey = process.env.API_KEY;
+    
+    // Explicit safety check
+    if (!apiKey || apiKey.startsWith('VITE_')) {
+        throw new Error("API Key is missing or invalid. Check Vercel Environment Variables.");
+    }
+
+    const ai = new GoogleGenAI({ apiKey });
 
     const typeContext = forcedType 
       ? (forcedType === 'indoor' ? "사용자는 현재 '실내'에 있습니다." : "사용자는 현재 '실외'에 있습니다.") 
@@ -74,7 +77,6 @@ export const generateEcoMissions = async (
     const missions = rawMissions.map((m: any, index: number) => ({
       ...m,
       id: Date.now() + index,
-      // Force clamp time between 10s and 60s for demo even if AI returns more
       estimatedTimeSeconds: Math.min(Math.max(m.duration, 10), 60), 
       type: m.type || (forcedType || 'outdoor') // Fallback type
     }));
@@ -86,15 +88,15 @@ export const generateEcoMissions = async (
 
   } catch (error) {
     console.error("Gemini mission generation failed:", error);
-    // Fallback static missions
+    // Fallback static missions - guarantees app doesn't look empty even if API fails
     return {
       locationContext: '기본 미션',
       missions: [
         {
           id: 'fallback-1',
           title: '주변 쓰레기 3개 줍기',
-          description: `지금 ${location.address} 주변에 떨어진 쓰레기를 주워 깨끗한 거리를 만들어보세요.`,
-          estimatedTimeSeconds: 15, // Reduced for demo
+          description: `지금 ${location.address} 주변에 떨어진 쓰레기를 주워 깨끗한 거리를 만들어보세요. (AI 연결 확인 필요)`,
+          estimatedTimeSeconds: 15, 
           points: 10,
           type: 'outdoor',
           iconName: 'trash'
@@ -103,7 +105,7 @@ export const generateEcoMissions = async (
           id: 'fallback-2',
           title: '텀블러 사용하기',
           description: '일회용 컵 대신 텀블러를 사용하여 지구를 지켜주세요.',
-          estimatedTimeSeconds: 10, // Reduced for demo
+          estimatedTimeSeconds: 10, 
           points: 20,
           type: 'indoor',
           iconName: 'coffee'

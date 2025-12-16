@@ -1,4 +1,3 @@
-
 import { User, MissionLog, SavedPlace, Mission } from '../types';
 
 // Keys for storage
@@ -27,7 +26,6 @@ const INITIAL_PLACES: SavedPlace[] = [
 ];
 
 export const getStageFromPoints = (points: number): string => {
-  // Increased thresholds for harder leveling (based on lifetimePoints)
   if (points >= 3000) return '나무';
   if (points >= 1500) return '열매';
   if (points >= 500) return '꽃';
@@ -35,65 +33,83 @@ export const getStageFromPoints = (points: number): string => {
 };
 
 export const calculateStreak = (logs: MissionLog[]): number => {
-  if (logs.length === 0) return 0;
+  if (!Array.isArray(logs) || logs.length === 0) return 0;
   
-  // Create a set of unique dates (YYYY-MM-DD)
-  const distinctDates = new Set(logs.map(log => log.completedAt.split('T')[0]));
-  
-  let currentStreak = 0;
-  const checkDate = new Date();
-  const todayStr = checkDate.toISOString().split('T')[0];
-  
-  // If today has no record, check yesterday to continue streak
-  if (!distinctDates.has(todayStr)) {
-      checkDate.setDate(checkDate.getDate() - 1);
-      const yesterdayStr = checkDate.toISOString().split('T')[0];
-      if (!distinctDates.has(yesterdayStr)) {
-          return 0; // No streak
-      }
-  }
-
-  // Count backwards
-  while (true) {
-      const s = checkDate.toISOString().split('T')[0];
-      if (distinctDates.has(s)) {
-          currentStreak++;
+  try {
+      // Create a set of unique dates (YYYY-MM-DD)
+      const distinctDates = new Set(logs.map(log => log.completedAt.split('T')[0]));
+      
+      let currentStreak = 0;
+      const checkDate = new Date();
+      const todayStr = checkDate.toISOString().split('T')[0];
+      
+      // If today has no record, check yesterday to continue streak
+      if (!distinctDates.has(todayStr)) {
           checkDate.setDate(checkDate.getDate() - 1);
-      } else {
-          break;
+          const yesterdayStr = checkDate.toISOString().split('T')[0];
+          if (!distinctDates.has(yesterdayStr)) {
+              return 0; // No streak
+          }
       }
+
+      // Count backwards
+      while (true) {
+          const s = checkDate.toISOString().split('T')[0];
+          if (distinctDates.has(s)) {
+              currentStreak++;
+              checkDate.setDate(checkDate.getDate() - 1);
+          } else {
+              break;
+          }
+      }
+      return currentStreak;
+  } catch (e) {
+      console.error("Streak calculation error", e);
+      return 0;
   }
-  
-  return currentStreak;
 };
 
 export const getUser = (): User => {
-  const stored = localStorage.getItem(USER_KEY);
-  if (stored) {
-    const parsed = JSON.parse(stored);
-    // Migration for existing users without lifetimePoints or inventory
-    if (parsed.lifetimePoints === undefined) {
-      parsed.lifetimePoints = parsed.points;
-    }
-    if (parsed.inventory === undefined) {
-      parsed.inventory = [];
-    }
-    return parsed;
+  try {
+      const stored = localStorage.getItem(USER_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        // Migration for existing users
+        if (parsed.lifetimePoints === undefined) parsed.lifetimePoints = parsed.points;
+        if (parsed.inventory === undefined) parsed.inventory = [];
+        return parsed;
+      }
+  } catch (e) {
+      console.error("User data corrupted, resetting", e);
+      localStorage.removeItem(USER_KEY);
   }
   return INITIAL_USER;
 };
 
 export const saveUser = (user: User): void => {
-  localStorage.setItem(USER_KEY, JSON.stringify(user));
+  try {
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
+  } catch (e) {
+    console.error("Failed to save user", e);
+  }
 };
 
 export const getLogs = (): MissionLog[] => {
-  const stored = localStorage.getItem(LOGS_KEY);
-  return stored ? JSON.parse(stored) : [];
+  try {
+      const stored = localStorage.getItem(LOGS_KEY);
+      return stored ? JSON.parse(stored) : [];
+  } catch (e) {
+      console.error("Logs corrupted, resetting", e);
+      return [];
+  }
 };
 
 export const saveLogs = (logs: MissionLog[]): void => {
-  localStorage.setItem(LOGS_KEY, JSON.stringify(logs));
+  try {
+    localStorage.setItem(LOGS_KEY, JSON.stringify(logs));
+  } catch (e) {
+    console.error("Failed to save logs", e);
+  }
 };
 
 export const addLog = (log: MissionLog): void => {
@@ -103,8 +119,12 @@ export const addLog = (log: MissionLog): void => {
 };
 
 export const getSavedPlaces = (): SavedPlace[] => {
-  const stored = localStorage.getItem(PLACES_KEY);
-  return stored ? JSON.parse(stored) : INITIAL_PLACES;
+  try {
+      const stored = localStorage.getItem(PLACES_KEY);
+      return stored ? JSON.parse(stored) : INITIAL_PLACES;
+  } catch (e) {
+      return INITIAL_PLACES;
+  }
 };
 
 export const saveSavedPlaces = (places: SavedPlace[]): void => {
@@ -114,23 +134,21 @@ export const saveSavedPlaces = (places: SavedPlace[]): void => {
 export const updateUserPoints = (pointsToAdd: number): User => {
   const user = getUser();
   user.points += pointsToAdd;
-  user.lifetimePoints += pointsToAdd; // Always increase lifetime points
+  user.lifetimePoints += pointsToAdd;
   user.totalMissionsCompleted += 1;
-  user.stage = getStageFromPoints(user.lifetimePoints); // Level up based on lifetime points
+  user.stage = getStageFromPoints(user.lifetimePoints);
   saveUser(user);
   return user;
 };
 
-// Function to deduct points for shop purchases
 export const deductUserPoints = (amount: number): User | null => {
   const user = getUser();
   if (user.points >= amount) {
     user.points -= amount;
-    // Do NOT decrease lifetimePoints or change stage
     saveUser(user);
     return user;
   }
-  return null; // Insufficient funds
+  return null;
 };
 
 export const purchaseItem = (itemId: string, cost: number): User | null => {
@@ -149,7 +167,6 @@ export const purchaseItem = (itemId: string, cost: number): User | null => {
 // --- Google Sheet Logic ---
 export const saveToGoogleSheet = async (mission: Mission, currentUserState: User) => {
   if (!FIXED_GOOGLE_SHEET_URL) {
-    console.warn("Google Sheet URL is not set.");
     return { success: false, message: "URL 미설정" };
   }
   try {
@@ -160,7 +177,6 @@ export const saveToGoogleSheet = async (mission: Mission, currentUserState: User
       level: currentUserState.stage
     };
     
-    // Using no-cors mode for fire-and-forget saving
     await fetch(FIXED_GOOGLE_SHEET_URL, {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -168,10 +184,8 @@ export const saveToGoogleSheet = async (mission: Mission, currentUserState: User
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     });
     
-    console.log("Sent to Google Sheet");
     return { success: true, message: "전송 성공! (반영까지 3초)" };
   } catch (error: any) {
-    console.error("Google Sheet Save Error:", error);
     return { success: false, message: "전송 실패" };
   }
 };
@@ -191,7 +205,6 @@ export const syncFromGoogleSheet = async (userName: string): Promise<SyncResult>
   }
 
   try {
-    // Force fresh fetch
     const response = await fetch(`${FIXED_GOOGLE_SHEET_URL}?t=${Date.now()}`);
     
     if (!response.ok) {
@@ -206,7 +219,6 @@ export const syncFromGoogleSheet = async (userName: string): Promise<SyncResult>
     }
     
     if (!Array.isArray(rows)) {
-        // Handle case where script might return {data: [...]} or just [...]
         if (rows.data && Array.isArray(rows.data)) {
             rows = rows.data;
         } else {
@@ -214,7 +226,6 @@ export const syncFromGoogleSheet = async (userName: string): Promise<SyncResult>
         }
     }
 
-    // Filter logs for the current user
     const targetUser = userName.trim();
     const userRows = rows.filter((r: any) => r.user && String(r.user).trim() === targetUser);
     
@@ -222,9 +233,7 @@ export const syncFromGoogleSheet = async (userName: string): Promise<SyncResult>
         return { success: true, message: `⚠️ '${targetUser}'님의 기록이 시트에 없습니다.` };
     }
 
-    // Reconstruct logs with aggressive number parsing
     const recoveredLogs: MissionLog[] = userRows.map((r: any, index: number) => {
-        // Parse points: remove all non-numeric chars, default to 0
         const rawPoints = String(r.points || '0');
         const points = parseInt(rawPoints.replace(/[^0-9]/g, ''), 10) || 0;
         
@@ -238,15 +247,11 @@ export const syncFromGoogleSheet = async (userName: string): Promise<SyncResult>
         };
     });
 
-    // Calculate total points
     const totalPoints = recoveredLogs.reduce((sum, log) => sum + log.points, 0);
-
-    // Update Local Storage
     saveLogs(recoveredLogs);
 
     const currentUser = getUser();
     currentUser.lifetimePoints = totalPoints;
-    // Restore spendable points (simplified: restored points = total earned points)
     currentUser.points = totalPoints; 
     currentUser.totalMissionsCompleted = recoveredLogs.length;
     currentUser.stage = getStageFromPoints(totalPoints);
@@ -255,7 +260,7 @@ export const syncFromGoogleSheet = async (userName: string): Promise<SyncResult>
 
     return { 
         success: true, 
-        message: `✅ 복구 성공! 총 ${totalPoints}P (${recoveredLogs.length}건)`,
+        message: `✅ 복구 성공! 총 ${totalPoints}P`,
         data: {
             user: currentUser,
             logs: recoveredLogs
